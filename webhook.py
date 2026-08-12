@@ -22,9 +22,6 @@ def parse_payload():
 def health():
     return jsonify({"status":"ok","service":"ParthTraderAlerts Chartink Webhook"})
 
-@app.get("/health")
-def health():
-    return jsonify({"status":"healthy"})
 
 @app.post("/webhook/<token>")
 def receive(token):
