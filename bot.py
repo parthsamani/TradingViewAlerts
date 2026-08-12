@@ -109,8 +109,14 @@ async def admin_stats(update, context):
         parse_mode="HTML"
     )
 
-def run_flask():
-    flask_app.run(host="0.0.0.0",port=8000,debug=False,use_reloader=False)
+import os
+
+flask_app.run(
+    host="0.0.0.0",
+    port=int(os.environ.get("PORT", 8000)),
+    debug=False,
+    use_reloader=False
+)
 
 async def alert_dispatcher(app):
     seen=[]
