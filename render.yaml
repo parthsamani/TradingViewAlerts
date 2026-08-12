@@ -1,22 +1,9 @@
 services:
-  - type: web
-    name: parthtraderalerts-chartink-bot
-    runtime: python
+    - type: web
+    name: telegram-bot
+    env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-
+    startCommand: gunicorn webhook:app  # <- webhook.py me app hai isliye
     envVars:
-      - key: BOT_TOKEN
-        sync: false
-
-      - key: ADMIN_IDS
-        sync: false
-
-      - key: WEBHOOK_BASE_URL
-        sync: false
-
-      - key: WEBHOOK_SECRET
-        sync: false
-
-      - key: LOG_LEVEL
-        value: INFO
+            - key: BOT_TOKEN
+        value: YOUR_BOT_TOKEN
