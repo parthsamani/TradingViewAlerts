@@ -195,9 +195,10 @@ def home():
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
-def run_bot():
-    application.run_polling(drop_pending_updates=True)
-
 if __name__ == "__main__":
+    # Flask ko background me chalao
     Thread(target=run_flask, daemon=True).start()
-    run_bot()
+    
+    # Bot polling main thread me
+    logger.info("Starting Polling...")
+    application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
