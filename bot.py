@@ -41,6 +41,10 @@ def loop():
 
 threading.Thread(target=loop, daemon=True).start()
 
+@app.head("/")
+def home_head():
+    return {}
+    
 @app.get("/")
 def home():
     return {"status": "Bot Running 24x7", "logic": "110-750 F&O Bottom 2nd Box", "last_stocks": list(old), "env_set": bool(BOT_TOKEN and CHAT_ID)}
