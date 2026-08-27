@@ -1,5 +1,5 @@
-python-telegram-bot==20.7
-Flask==2.3.3
-pandas==2.0.3
-curl_cffi==0.7.0
-openpyxl==3.1.2
+python-telegram-bot
+Flask
+pandas
+curl_cffi
+openpyxl
