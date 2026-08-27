@@ -63,23 +63,35 @@ def compute_rsi(close_series, period=14):
 
 application = Application.builder().token(BOT_TOKEN).build()
 
+# ===== FINAL FIXED JOIN CHECK =====
 async def is_joined_channel(user_id):
-    if not CHANNEL_ID: return True
+    # 1. Owner ko hamesha allow
+    if user_id == ADMIN_ID:
+        return True
+    if not CHANNEL_ID:
+        return True
+
+    # 2. Cache check (60 sec ka rakha hai taki left ka turant pata chale)
     if user_id in joined_cache:
-        if (get_ist() - joined_cache[user_id]['time']).seconds < 300:
+        if (get_ist() - joined_cache[user_id]['time']).seconds < 60:
             return joined_cache[user_id]['joined']
+
     try:
-        member=await application.bot.get_chat_member(chat_id=int(CHANNEL_ID), user_id=user_id)
+        member = await application.bot.get_chat_member(chat_id=int(CHANNEL_ID), user_id=user_id)
+        # left, kicked, banned = Not joined
+        if member.status in ['left', 'kicked', 'banned']:
+            joined_cache[user_id] = {'joined': False, 'time': get_ist()}
+            return False
         is_joined = member.status in ['member','administrator','creator','owner']
         joined_cache[user_id] = {'joined': is_joined, 'time': get_ist()}
         return is_joined
     except Exception as e:
         print(f"Join check error for {user_id}: {e}")
-        return False # Ab False karega to Join message dikhega
+        return False
 
 def get_fno_alerts(chat_id=None, cfg_override=None, save_log=True, debug=False, is_channel=False):
     cfg=cfg_override if cfg_override else CHANNEL_FIXED_CFG if is_channel else get_settings(chat_id) if chat_id else CHANNEL_FIXED_CFG
-    alerts=[]; debug_logs=[]; today_str=get_ist().strftime('%Y-%m-%d')
+    alerts=[]; today_str=get_ist().strftime('%Y-%m-%d')
     for sym in FNO:
         try:
             df_daily=fetch_yahoo_data(sym,"3mo","1d")
@@ -112,45 +124,51 @@ def get_fno_alerts(chat_id=None, cfg_override=None, save_log=True, debug=False, 
                 alerted_today[chat_id][symbol]=today_str; last_alert_time[chat_id][symbol]=get_ist()
                 trade_log.setdefault(chat_id,[]).append({"time":get_ist().strftime('%Y-%m-%d %H:%M'),"symbol":symbol,"close":curr_price,"rsi":round(rsi_val,1),"50D_Low":round(low_50,2)})
         except: continue
-    return alerts, debug_logs
+    return alerts, []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user(update)
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID):
         return
-    # FAST REPLY FIRST
-    await update.message.reply_text("⏳ Checking...")
+
+    # Owner hai to direct
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text(
+            f"👑 **Owner Mode**\n🚀 **{len(FNO)} Stocks**\n"
+            f"IST: {get_ist().strftime('%I:%M %p')}\n\n"
+            f"/scan - Scan\n/users - All Users\n/channelon - Channel ON"
+        )
+        return
+
     joined = await is_joined_channel(update.effective_user.id)
     if not joined:
         kb = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
         await update.message.reply_text(
-            f"⛔ **Channel Join Karna Jaruri Hai**\n\nBot use karne ke liye pehle join karo 👇\n{CHANNEL_LINK}\n\nJoin karke /start bhejo",
+            f"⛔ **Channel Join Karna Jaruri Hai**\n\nBot use karne ke liye join karo 👇\n{CHANNEL_LINK}\n\nJoin karke /start bhejo",
             reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
         )
         return
+
     await update.message.reply_text(
         f"🚀 **Buying Range Bot - {len(FNO)} Stocks**\n"
         f"IST: {get_ist().strftime('%I:%M %p')}\n\n"
-        f"/scan - Manual Scan\n/auto - Auto ON\n/stop - Auto OFF\n/users - User List (Admin)\n/export - Export"
+        f"/scan - Manual Scan\n/auto - Auto ON\n/stop - Auto OFF\n/export - Export"
     )
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user(update)
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID): return
-
-    if not await is_joined_channel(update.effective_user.id):
-        kb = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
-        await update.message.reply_text(f"⛔ Pehle Join Karo: {CHANNEL_LINK}", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    await update.message.reply_text(f"🔍 Scanning {len(FNO)} stocks... thoda time lagega (1-2 min)")
-
+    if update.effective_user.id!= ADMIN_ID:
+        if not await is_joined_channel(update.effective_user.id):
+            kb = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
+            await update.message.reply_text(f"⛔ Pehle Join Karo: {CHANNEL_LINK}", reply_markup=InlineKeyboardMarkup(kb))
+            return
+    await update.message.reply_text(f"🔍 Scanning {len(FNO)} stocks... 1-2 min")
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor() as pool:
         alerts, _ = await loop.run_in_executor(pool, lambda: get_fno_alerts(chat_id=update.effective_chat.id, is_channel=False))
-
     if not alerts:
-        await update.message.reply_text(f"❌ No stock in buying range now. {get_ist().strftime('%I:%M %p')}")
+        await update.message.reply_text(f"❌ No stock now. {get_ist().strftime('%I:%M %p')}")
     else:
         for a in alerts[:15]:
             await update.message.reply_text(a, parse_mode="Markdown")
@@ -159,7 +177,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user(update)
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID): return
-    await update.message.reply_text("🔍 Debug..."); alerts,logs=get_fno_alerts(chat_id=update.effective_chat.id, debug=True); await update.message.reply_text(f"Alerts: {len(alerts)}");
+    await update.message.reply_text("🔍 Debug..."); alerts,_=get_fno_alerts(chat_id=update.effective_chat.id, debug=True); await update.message.reply_text(f"Alerts: {len(alerts)}");
     for a in alerts[:3]: await update.message.reply_text(a, parse_mode="Markdown")
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,11 +204,9 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!= ADMIN_ID:
-        await update.message.reply_text("⛔ Sirf Admin")
-        return
+        await update.message.reply_text("⛔ Sirf Admin"); return
     if not user_tracking:
-        await update.message.reply_text("Abhi tak koi user nahi")
-        return
+        await update.message.reply_text("Abhi tak koi user nahi"); return
     msg = f"👥 **Total Users: {len(user_tracking)}**\n\n"
     for uid, info in list(user_tracking.items())[-20:]:
         msg += f"👤 {info['name']} | {info['username']}\nID: {uid} | Count: {info['count']}\nLast: {info['last_seen']}\n\n"
@@ -202,8 +218,9 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 auto_users=set()
 async def auto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID): return
-    if not await is_joined_channel(update.effective_user.id):
-        await update.message.reply_text(f"Join {CHANNEL_LINK}"); return
+    if update.effective_user.id!= ADMIN_ID:
+        if not await is_joined_channel(update.effective_user.id):
+            await update.message.reply_text(f"Join {CHANNEL_LINK}"); return
     auto_users.add(update.effective_chat.id); await update.message.reply_text(f"✅ Auto ON {len(FNO)} stocks")
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID): return
@@ -220,7 +237,7 @@ async def set_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args=context.args; CHANNEL_FIXED_CFG={"min_price":float(args[0]),"max_price":float(args[1]),"rsi_max":float(args[2]),"low_per":float(args[3])}
         await update.message.reply_text(f"✅ Updated {CHANNEL_FIXED_CFG}")
-    except Exception as e: await update.message.reply_text(f"Usage: /setchannel 110 750 45 8")
+    except: await update.message.reply_text(f"Usage: /setchannel 110 750 45 8")
 
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("scan", scan_cmd))
