@@ -30,7 +30,6 @@ last_alert_time = {}
 alerted_today_channel = {}
 last_alert_time_channel = {}
 COOLDOWN_MIN = 120
-joined_cache = {}
 
 def get_ist():
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
@@ -63,31 +62,26 @@ def compute_rsi(close_series, period=14):
 
 application = Application.builder().token(BOT_TOKEN).build()
 
-# ===== FINAL FIXED JOIN CHECK =====
+# ===== 100% FIXED - NO CACHE, NO FALSE BLOCK =====
 async def is_joined_channel(user_id):
-    # 1. Owner ko hamesha allow
-    if user_id == ADMIN_ID:
+    # Owner hamesha allow
+    if str(user_id) == str(ADMIN_ID):
         return True
     if not CHANNEL_ID:
         return True
-
-    # 2. Cache check (60 sec ka rakha hai taki left ka turant pata chale)
-    if user_id in joined_cache:
-        if (get_ist() - joined_cache[user_id]['time']).seconds < 60:
-            return joined_cache[user_id]['joined']
-
     try:
         member = await application.bot.get_chat_member(chat_id=int(CHANNEL_ID), user_id=user_id)
-        # left, kicked, banned = Not joined
-        if member.status in ['left', 'kicked', 'banned']:
-            joined_cache[user_id] = {'joined': False, 'time': get_ist()}
-            return False
-        is_joined = member.status in ['member','administrator','creator','owner']
-        joined_cache[user_id] = {'joined': is_joined, 'time': get_ist()}
-        return is_joined
+        # left / kicked / banned = block
+        if member.status in ['left', 'kicked', 'banned', 'restricted']:
+            # restricted ko bhi block kar sakte ho, ya allow karna hai to hata do
+            if member.status in ['left', 'kicked', 'banned']:
+                return False
+        return True if member.status in ['member','administrator','creator','owner','restricted'] else False
     except Exception as e:
-        print(f"Join check error for {user_id}: {e}")
-        return False
+        print(f"JOIN CHECK ERROR {user_id}: {e}")
+        # Error aaye to Allow kar do, warna joined users bhi block honge
+        # Agar bot admin hai to left ka status sahi ayega, error nahi ayega
+        return True
 
 def get_fno_alerts(chat_id=None, cfg_override=None, save_log=True, debug=False, is_channel=False):
     cfg=cfg_override if cfg_override else CHANNEL_FIXED_CFG if is_channel else get_settings(chat_id) if chat_id else CHANNEL_FIXED_CFG
@@ -130,45 +124,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user(update)
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID):
         return
-
-    # Owner hai to direct
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text(
-            f"👑 **Owner Mode**\n🚀 **{len(FNO)} Stocks**\n"
-            f"IST: {get_ist().strftime('%I:%M %p')}\n\n"
-            f"/scan - Scan\n/users - All Users\n/channelon - Channel ON"
-        )
+    # Owner
+    if str(update.effective_user.id) == str(ADMIN_ID):
+        await update.message.reply_text(f"👑 **Owner Mode**\n🚀 {len(FNO)} Stocks\n/scan /users /channelon")
         return
-
     joined = await is_joined_channel(update.effective_user.id)
     if not joined:
         kb = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
-        await update.message.reply_text(
-            f"⛔ **Channel Join Karna Jaruri Hai**\n\nBot use karne ke liye join karo 👇\n{CHANNEL_LINK}\n\nJoin karke /start bhejo",
-            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"⛔ **Channel Join Karo**\n{CHANNEL_LINK}\n\nLeft kar diya hai to dobara join karo", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
         return
-
-    await update.message.reply_text(
-        f"🚀 **Buying Range Bot - {len(FNO)} Stocks**\n"
-        f"IST: {get_ist().strftime('%I:%M %p')}\n\n"
-        f"/scan - Manual Scan\n/auto - Auto ON\n/stop - Auto OFF\n/export - Export"
-    )
+    await update.message.reply_text(f"🚀 **Buying Range Bot - {len(FNO)} Stocks**\n/scan /auto /stop")
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user(update)
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID): return
-    if update.effective_user.id!= ADMIN_ID:
+    if str(update.effective_user.id)!= str(ADMIN_ID):
         if not await is_joined_channel(update.effective_user.id):
             kb = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
-            await update.message.reply_text(f"⛔ Pehle Join Karo: {CHANNEL_LINK}", reply_markup=InlineKeyboardMarkup(kb))
+            await update.message.reply_text(f"⛔ Join Karo: {CHANNEL_LINK}", reply_markup=InlineKeyboardMarkup(kb))
             return
-    await update.message.reply_text(f"🔍 Scanning {len(FNO)} stocks... 1-2 min")
+    await update.message.reply_text(f"🔍 Scanning {len(FNO)}...")
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor() as pool:
         alerts, _ = await loop.run_in_executor(pool, lambda: get_fno_alerts(chat_id=update.effective_chat.id, is_channel=False))
     if not alerts:
-        await update.message.reply_text(f"❌ No stock now. {get_ist().strftime('%I:%M %p')}")
+        await update.message.reply_text(f"❌ No stock now {get_ist().strftime('%I:%M %p')}")
     else:
         for a in alerts[:15]:
             await update.message.reply_text(a, parse_mode="Markdown")
@@ -203,36 +183,33 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(document=output, filename=f"BuyingRange_{get_ist().strftime('%d-%b')}.xlsx")
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id!= ADMIN_ID:
-        await update.message.reply_text("⛔ Sirf Admin"); return
-    if not user_tracking:
-        await update.message.reply_text("Abhi tak koi user nahi"); return
-    msg = f"👥 **Total Users: {len(user_tracking)}**\n\n"
+    if str(update.effective_user.id)!=str(ADMIN_ID): await update.message.reply_text("⛔ Sirf Admin"); return
+    if not user_tracking: await update.message.reply_text("Koi user nahi"); return
+    msg = f"👥 Total: {len(user_tracking)}\n\n"
     for uid, info in list(user_tracking.items())[-20:]:
-        msg += f"👤 {info['name']} | {info['username']}\nID: {uid} | Count: {info['count']}\nLast: {info['last_seen']}\n\n"
-    df = pd.DataFrame(list(user_tracking.values()))
-    output = BytesIO(); df.to_excel(output, index=False); output.seek(0)
+        msg += f"{info['name']} | {info['username']} | {uid} | {info['count']}\n"
+    df = pd.DataFrame(list(user_tracking.values())); output = BytesIO(); df.to_excel(output, index=False); output.seek(0)
     await update.message.reply_text(msg[:4000])
     await update.message.reply_document(document=output, filename=f"Users_{get_ist().strftime('%d-%b')}.xlsx")
 
 auto_users=set()
 async def auto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID): return
-    if update.effective_user.id!= ADMIN_ID:
+    if str(update.effective_user.id)!=str(ADMIN_ID):
         if not await is_joined_channel(update.effective_user.id):
             await update.message.reply_text(f"Join {CHANNEL_LINK}"); return
-    auto_users.add(update.effective_chat.id); await update.message.reply_text(f"✅ Auto ON {len(FNO)} stocks")
+    auto_users.add(update.effective_chat.id); await update.message.reply_text(f"✅ Auto ON")
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if CHANNEL_ID and str(update.effective_chat.id) == str(CHANNEL_ID): return
     auto_users.discard(update.effective_chat.id); await update.message.reply_text("🔴 Auto OFF")
 async def channel_on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id!= ADMIN_ID: return
-    global CHANNEL_AUTO_ENABLED; CHANNEL_AUTO_ENABLED=True; await update.message.reply_text(f"✅ Channel Auto ON {len(FNO)}")
+    if str(update.effective_user.id)!=str(ADMIN_ID): return
+    global CHANNEL_AUTO_ENABLED; CHANNEL_AUTO_ENABLED=True; await update.message.reply_text(f"✅ Channel Auto ON")
 async def channel_off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id!= ADMIN_ID: return
+    if str(update.effective_user.id)!=str(ADMIN_ID): return
     global CHANNEL_AUTO_ENABLED; CHANNEL_AUTO_ENABLED=False; await update.message.reply_text("🔴 Channel Auto OFF")
 async def set_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id!= ADMIN_ID: return
+    if str(update.effective_user.id)!=str(ADMIN_ID): return
     global CHANNEL_FIXED_CFG
     try:
         args=context.args; CHANNEL_FIXED_CFG={"min_price":float(args[0]),"max_price":float(args[1]),"rsi_max":float(args[2]),"low_per":float(args[3])}
@@ -254,9 +231,9 @@ application.add_handler(CommandHandler("setchannel", set_channel_cmd))
 application.add_handler(CallbackQueryHandler(button_cb))
 
 @app.route('/')
-def home(): return f"Bot Live {len(FNO)} | Users: {len(user_tracking)} | {get_ist().strftime('%H:%M IST')}"
+def home(): return f"Bot Live {len(FNO)} | Users: {len(user_tracking)}"
 @app.route('/reset')
-def reset_locks(): alerted_today.clear(); last_alert_time.clear(); alerted_today_channel.clear(); last_alert_time_channel.clear(); joined_cache.clear(); return "Reset done"
+def reset_locks(): alerted_today.clear(); last_alert_time.clear(); alerted_today_channel.clear(); last_alert_time_channel.clear(); return "Reset done"
 @app.route('/users')
 def users_web(): return {"total": len(user_tracking), "users": list(user_tracking.values())}
 
